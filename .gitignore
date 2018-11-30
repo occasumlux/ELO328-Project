@@ -1,0 +1,4 @@
+# Qt user configuration
+CMakeLists.txt.user*
+*.pro.user
+*.pro.user.*
