@@ -1,8 +1,10 @@
 #include <iostream>
-#include <vector>
 #include <opencv2/opencv.hpp>
 #include <opencv2/features2d.hpp>
 #include <opencv2/xfeatures2d.hpp>
+#include <Python.h>
+#include <string>
+#include <vector>
 
 cv::Mat processVeins(cv::Mat& img) {
     if (img.empty()){
@@ -12,12 +14,16 @@ cv::Mat processVeins(cv::Mat& img) {
     }
     cv::Mat gray, noNoise, opened, YUV, equalized, final;
     cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
+    // Denoise the picture
     cv::fastNlMeansDenoising(gray, noNoise);
+    // Apply an opening to the image
     int kernel_size = 7;
     cv::Mat kernel = cv::Mat::ones(kernel_size, kernel_size, CV_8U);
     cv::morphologyEx(noNoise, opened, cv::MORPH_OPEN, kernel);
 
+    // Equalization of the histogram
     cv::equalizeHist(opened, equalized);
+    // Inversion of the picture, 'cause the lines were black
     equalized = 255 - equalized;
 
     //cv::imshow("Orig", img);
@@ -29,6 +35,7 @@ cv::Mat processVeins(cv::Mat& img) {
     veins = 0;
     cv::Mat kernel2 = cv::getStructuringElement(cv::MORPH_CROSS, cv::Size(5,5));
 
+    // More opening, this time with another kernel
     for(;;) {
         cv::Mat temp, eroded;
         cv::morphologyEx(clone, eroded, cv::MORPH_ERODE, kernel2);
@@ -38,20 +45,95 @@ cv::Mat processVeins(cv::Mat& img) {
         clone = eroded.clone();
         //cv::imshow("Veins", eroded);
         //cv::waitKey(10);
-        //std::cout << "Uff" << std::endl;
         if (cv::countNonZero(clone) == 0)
             break;
     }
 
     //cv::imshow("Veins", veins);
+
+    // Thresholding to values over 5
     cv::threshold(veins, veins, 5, 255, cv::THRESH_BINARY);
     //cv::imshow("Veins Thresh", veins);
+    // The last opening, with a 3rd kernel, this time smaller
     cv::Mat kernel3 = cv::getStructuringElement(cv::MORPH_CROSS, cv::Size(3,3));
     cv::morphologyEx(veins, veins, cv::MORPH_ERODE, kernel3);
     cv::morphologyEx(veins, veins, cv::MORPH_DILATE, kernel3);
     //cv::imshow("Veins Last Morph", veins);
     //cv::waitKey();
     return veins;
+}
+
+// Function used to check if a palm belongs to an user
+// It calls a Python interpreter that matches the images
+// through machine learning
+double checkPalm(std::string imFilename, std::string moduleName) {
+    // Objects to interact with Python
+    PyObject *pName, *pModule, *pFunc;
+    PyObject *pArgs, *pValue;
+    // Probability returned from the script
+    double prob = -1;
+
+    // Init the interpreter
+    Py_Initialize();
+    // Set the current path as an import location
+    PyRun_SimpleString("import sys\n"
+                       "sys.path.insert(0, '.')");
+
+    // Import the script
+    pName = PyUnicode_DecodeFSDefault(moduleName.c_str());
+    pModule = PyImport_Import(pName);
+    Py_DECREF(pName);
+
+    if (pModule != NULL) {
+        pFunc = PyObject_GetAttrString(pModule, "predict_test");
+        // pFunc is a new reference to "predict"
+
+        if (pFunc && PyCallable_Check(pFunc)) {
+            // Arguments to the function
+            pArgs = PyTuple_New(1);
+            // In this case, a filename of an image
+            pValue = PyUnicode_DecodeFSDefault(imFilename.c_str());
+            if (!pValue) {
+                Py_DECREF(pArgs);
+                Py_DECREF(pModule);
+                std::cerr << "Cannot convert argument" << std::endl;
+                return -1;
+            }
+            PyTuple_SetItem(pArgs, 0, pValue);
+            // Call the function
+            pValue = PyObject_CallObject(pFunc, pArgs);
+            // Convert the result to an C++ value (double)
+            prob = PyFloat_AsDouble(pValue);
+
+            // Free the resources
+            Py_DECREF(pArgs);
+            if (pValue != NULL) {
+                Py_DECREF(pValue);
+            }
+            else {
+                Py_DECREF(pFunc);
+                Py_DECREF(pModule);
+                PyErr_Print();
+                std::cerr << "Call Failed" << std::endl;
+                return -1;
+            }
+        }
+        else {
+            if (PyErr_Occurred())
+                PyErr_Print();
+            std::cerr << "Cannot find function " << "'predict'" << std::endl;
+        }
+        Py_XDECREF(pFunc);
+        Py_DECREF(pModule);
+    }
+    else {
+        PyErr_Print();
+        std::cerr << "Failed to load '" << moduleName << "'" << std::endl;
+        return -1;
+    }
+    Py_Finalize();
+
+    return prob;
 }
 
 int main(int argc, char *argv[])
@@ -62,8 +144,13 @@ int main(int argc, char *argv[])
     cv::Mat veins1 = processVeins(cut1);
     cv::Mat veins2 = processVeins(cut2);
 
-    cv::imshow("Cut 1", veins1);
-    cv::imshow("Cut 2",veins2);
+    //cv::imshow("Cut 1", veins1);
+    //cv::imshow("Cut 2",veins2);
+
+    double a = checkPalm("veins.png", "scripts");
+    std:: cout << a << std::endl;
+
+    //cv::waitKey();
 
     //cv::Mat templateRes;
     //cv::Mat resized;
@@ -79,6 +166,7 @@ int main(int argc, char *argv[])
 
     //cv::imshow("Resized", resized);
 
+    /*
     cv::Ptr<cv::xfeatures2d::SURF> detector = cv::xfeatures2d::SURF::create();
     std::vector<cv::KeyPoint> keypoints1, keypoints2;
     cv::Mat descriptors1, descriptors2;
@@ -108,52 +196,6 @@ int main(int argc, char *argv[])
     cv::namedWindow("Good Matches", cv::WINDOW_GUI_EXPANDED);
     imshow("Good Matches", img_matches );
 
-    cv::waitKey();
-    /*
-    if (img.empty()){
-    
-        std::cerr << "Image not found!!!" << std::endl;
-        return -1;
-    }
-    cv::Mat gray, noNoise, opened, YUV, equalized, final;
-    cv::cvtColor(img, gray, cv::COLOR_BGR2GRAY);
-    cv::fastNlMeansDenoising(gray, noNoise);
-    int kernel_size = 7;
-    cv::Mat kernel = cv::Mat::ones(kernel_size, kernel_size, CV_8U);
-    cv::morphologyEx(noNoise, opened, cv::MORPH_OPEN, kernel);
-
-    cv::equalizeHist(opened, equalized);
-    equalized = 255 - equalized;
-
-    cv::imshow("Orig", img);
-    cv::imshow("Eq", equalized);
-    //cv::waitKey();
-
-    cv::Mat clone = equalized.clone();
-    cv::Mat veins = clone.clone();
-    veins = 0;
-    cv::Mat kernel2 = cv::getStructuringElement(cv::MORPH_CROSS, cv::Size(5,5));
-
-    for(;;) {
-        cv::Mat temp, eroded;
-        cv::morphologyEx(clone, eroded, cv::MORPH_ERODE, kernel2);
-        cv::morphologyEx(eroded, temp, cv::MORPH_DILATE, kernel2);
-        cv::subtract(clone, temp, temp);
-        cv::bitwise_or(veins, temp, veins);
-        clone = eroded.clone();
-        //cv::imshow("Veins", eroded);
-        //cv::waitKey(10);
-        //std::cout << "Uff" << std::endl;
-        if (cv::countNonZero(clone) == 0)
-            break;
-    }
-    cv::imshow("Veins", veins);
-    cv::threshold(veins, veins, 5, 255, cv::THRESH_BINARY);
-    cv::imshow("Veins Thresh", veins);
-    cv::Mat kernel3 = cv::getStructuringElement(cv::MORPH_CROSS, cv::Size(3,3));
-    cv::morphologyEx(veins, veins, cv::MORPH_ERODE, kernel3);
-    cv::morphologyEx(veins, veins, cv::MORPH_DILATE, kernel3);
-    cv::imshow("Veins Last Morph", veins);
     cv::waitKey();
     */
 }
